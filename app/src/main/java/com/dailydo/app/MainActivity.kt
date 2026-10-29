@@ -1,4 +1,5 @@
 package com.dailydo.app
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.clip
@@ -11,8 +12,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -35,7 +34,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -77,6 +75,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Read the extra from the notification click
+        editTaskIdState.value = intent.getIntExtra("EXTRA_TASK_ID", -1)
+
         val dao = AppDatabase.getDatabase(this).todoDao()
         val settingsManager = SettingsManager(this)
 
@@ -104,6 +105,16 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    // Handle notification clicks when app is already open
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val newTaskId = intent.getIntExtra("EXTRA_TASK_ID", -1)
+        if (newTaskId != -1) {
+            editTaskIdState.value = newTaskId
         }
     }
 }
@@ -686,11 +697,13 @@ fun TasksScreen(
                                 priority = item.priority,
                                 done = item.isDone,
                                 onToggle = {
+                                    // FIXED: Use updated state
+                                    val updated = item.copy(isDone = !item.isDone)
                                     vm.toggleDone(item)
-                                    if (item.isDone) {
-                                        TestReminderHelper.cancelReminder(context, item.id)
+                                    if (updated.isDone) {
+                                        TestReminderHelper.cancelReminder(context, updated.id)
                                     } else {
-                                        TestReminderHelper.scheduleReminder(context, item)
+                                        TestReminderHelper.scheduleReminder(context, updated)
                                     }
                                 },
                                 onDelete = {
@@ -737,11 +750,13 @@ fun TasksScreen(
                                 priority = item.priority,
                                 done = item.isDone,
                                 onToggle = {
+                                    // FIXED: Use updated state
+                                    val updated = item.copy(isDone = !item.isDone)
                                     vm.toggleDone(item)
-                                    if (item.isDone) {
-                                        TestReminderHelper.cancelReminder(context, item.id)
+                                    if (updated.isDone) {
+                                        TestReminderHelper.cancelReminder(context, updated.id)
                                     } else {
-                                        TestReminderHelper.scheduleReminder(context, item)
+                                        TestReminderHelper.scheduleReminder(context, updated)
                                     }
                                 },
                                 onDelete = {

@@ -443,11 +443,12 @@ fun TaskListForDate(
                 CalendarTaskRow(
                     task = task,
                     onToggle = {
+                        val updated = task.copy(isDone = !task.isDone)
                         vm.toggleDone(task)
-                        if (task.isDone) {
-                            TestReminderHelper.cancelReminder(context, task.id)
+                        if (updated.isDone) {
+                            TestReminderHelper.cancelReminder(context, updated.id)
                         } else {
-                            TestReminderHelper.scheduleReminder(context, task)
+                            TestReminderHelper.scheduleReminder(context, updated)
                         }
                     },
                     onDelete = {
