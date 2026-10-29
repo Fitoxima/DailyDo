@@ -3,6 +3,7 @@ package com.dailydo.app
 import android.R
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -45,12 +46,24 @@ class TestReminderReceiver : BroadcastReceiver() {
                     task?.description?.ifEmpty { "Task reminder due now" } ?: "5 seconds have passed!"
                 }
 
+                val clickIntent = Intent(context, MainActivity::class.java).apply {
+                    putExtra("EXTRA_TASK_ID", taskId)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+                val pendingIntent = PendingIntent.getActivity(
+                    context,
+                    taskId,
+                    clickIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
                 val notification = NotificationCompat.Builder(context, channelId)
                     .setSmallIcon(R.drawable.ic_dialog_info)
                     .setContentTitle(title)
                     .setContentText(text)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setAutoCancel(true)
+                    .setContentIntent(pendingIntent)
                     .build()
 
                 notificationManager.notify(if (taskId != -1) taskId else 999, notification)

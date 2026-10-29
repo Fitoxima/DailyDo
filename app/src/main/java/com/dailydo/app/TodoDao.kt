@@ -13,6 +13,9 @@ interface TodoDao {
     @Query("SELECT * FROM todos ORDER BY id DESC")
     fun getAll(): Flow<List<TodoItem>>
 
+    @Query("SELECT * FROM todos")
+    suspend fun getAllDirect(): List<TodoItem>
+
     @Query("SELECT * FROM todos WHERE isDone = 1 ORDER BY id DESC")
     fun getCompleted(): Flow<List<TodoItem>>
 
