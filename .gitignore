@@ -12,3 +12,10 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Signing Keys
+*.jks
+*.keystore
+keystore.properties
+app/release/
+.tmp/

@@ -13,6 +13,9 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.ceil
 
 class TestReminderReceiver : BroadcastReceiver() {
@@ -40,19 +43,53 @@ class TestReminderReceiver : BroadcastReceiver() {
 
                 val title = task?.title ?: "Test Reminder"
                 val dueMillis = task?.let { it.dueTimeMillis ?: it.dueDateMillis }
-                val text = if (dueMillis != null) {
-                    formatTimeRemaining(dueMillis - System.currentTimeMillis())
-                } else {
-                    task?.description?.ifEmpty { "Task reminder due now" } ?: "5 seconds have passed!"
+                val text = when {
+                    dueMillis != null -> {
+                        val reminderTime = task.reminderTimeMillis
+                        if (reminderTime != null && reminderTime == dueMillis) {
+                            val timeStr = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(dueMillis))
+                            "Task is due at $timeStr"
+                        } else {
+                            formatTimeRemaining(dueMillis - System.currentTimeMillis())
+                        }
+                    }
+                    else -> task?.description?.ifEmpty { "Task reminder due now" } ?: "5 seconds have passed!"
                 }
 
-                val clickIntent = Intent(context, MainActivity::class.java).apply {
+                // Mark as done action intent
+                val markDoneIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                    action = "ACTION_MARK_DONE"
                     putExtra("EXTRA_TASK_ID", taskId)
+                }
+                val markDonePendingIntent = PendingIntent.getBroadcast(
+                    context,
+                    taskId + 200000,
+                    markDoneIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                // Postpone action intent (opens MainActivity in edit mode)
+                val postponeIntent = Intent(context, MainActivity::class.java).apply {
+                    putExtra("EXTRA_TASK_ID", taskId)
+                    putExtra("EXTRA_OPEN_EDIT", true)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 }
-                val pendingIntent = PendingIntent.getActivity(
+                val postponePendingIntent = PendingIntent.getActivity(
                     context,
-                    taskId,
+                    taskId + 300000,
+                    postponeIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                // Main notification body click intent (opens Tasks screen)
+                val clickIntent = Intent(context, MainActivity::class.java).apply {
+                    putExtra("EXTRA_TASK_ID", taskId)
+                    putExtra("EXTRA_OPEN_TASKS", true)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+                val clickPendingIntent = PendingIntent.getActivity(
+                    context,
+                    taskId + 400000,
                     clickIntent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
@@ -63,10 +100,17 @@ class TestReminderReceiver : BroadcastReceiver() {
                     .setContentText(text)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setAutoCancel(true)
-                    .setContentIntent(pendingIntent)
+                    .setTimeoutAfter(15000L)
+                    .setContentIntent(clickPendingIntent)
+                    .addAction(R.drawable.checkbox_on_background, "Mark as done", markDonePendingIntent)
+                    .addAction(R.drawable.ic_menu_recent_history, "Postpone", postponePendingIntent)
                     .build()
 
                 notificationManager.notify(if (taskId != -1) taskId else 999, notification)
+
+                if (taskId != -1) {
+                    TestReminderHelper.scheduleLoopAlarm(context, taskId)
+                }
             } finally {
                 pendingResult.finish()
             }

@@ -262,7 +262,10 @@ fun CompletedTasksScreen(
                     TaskCard(
                         title = item.title,
                         priority = item.priority,
+                        category = item.category,
                         done = item.isDone,
+                        dueText = null,
+                        hasReminder = item.reminderTimeMillis != null,
                         onToggle = {
                             vm.toggleDone(item)
                         },

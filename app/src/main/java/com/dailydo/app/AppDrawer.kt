@@ -59,31 +59,6 @@ fun AppDrawerContent(
             modifier = Modifier.padding(bottom = 16.dp)
         )
 
-        // ── NOTIFICATION SETTINGS ─────────────────────────────
-        DrawerItem(
-            icon = Icons.Outlined.Notifications,
-            label = "Notification Settings",
-            onClick = {
-                val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                try {
-                    context.startActivity(intent)
-                } catch (e: Exception) {
-                    val fallbackIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    context.startActivity(fallbackIntent)
-                }
-            }
-        )
-
-        Spacer(Modifier.height(12.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-        Spacer(Modifier.height(16.dp))
-
         // ── DISPLAY SECTION ──────────────────────────────────
         Text(
             text = "DISPLAY MODE",

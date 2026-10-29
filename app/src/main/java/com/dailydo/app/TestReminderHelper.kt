@@ -52,6 +52,44 @@ object TestReminderHelper {
         alarmManager.cancel(pendingIntent)
     }
 
+    fun scheduleLoopAlarm(context: Context, taskId: Int) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(context, NotificationActionReceiver::class.java).apply {
+            action = "ACTION_LOOP_REMINDER"
+            putExtra("EXTRA_TASK_ID", taskId)
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            taskId + 100000,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val triggerTime = System.currentTimeMillis() + 15000L
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            } else {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+            }
+        } catch (e: Exception) {
+            Log.e("ReminderHelper", "Failed to schedule loop alarm", e)
+        }
+    }
+
+    fun cancelLoopAlarm(context: Context, taskId: Int) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(context, NotificationActionReceiver::class.java).apply {
+            action = "ACTION_LOOP_REMINDER"
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            taskId + 100000,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        alarmManager.cancel(pendingIntent)
+    }
+
     fun schedule5SecondReminder(context: Context) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, TestReminderReceiver::class.java)

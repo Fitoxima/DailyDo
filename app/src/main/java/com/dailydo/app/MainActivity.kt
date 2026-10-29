@@ -1,17 +1,24 @@
 package com.dailydo.app
+
+import android.Manifest
 import android.content.Intent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.ui.draw.clip
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -29,20 +36,26 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
-import androidx.compose.material3.TimePickerSelectionMode
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -55,6 +68,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
+import kotlin.math.ceil
 
 // ═════════════════════════════════════════════════════════════
 // TASK RUN LOGIC
@@ -68,15 +82,40 @@ fun shouldRunToday(task: TodoItem, date: LocalDate): Boolean {
     return dueDate == date
 }
 
+fun getDueText(task: TodoItem): String? {
+    if (task.isDone) return null
+    val due = task.dueTimeMillis ?: return null
+    val now = System.currentTimeMillis()
+    val reminder = task.reminderTimeMillis
+
+    // If reminder exists, only show after the reminder time triggers
+    if (reminder != null && now < reminder) return null
+
+    // If reminder is null (silent), only show when the task is actually due (or 1 min before)
+    if (reminder == null && now < due - 60_000L) return null
+
+    val diff = due - now
+    return when {
+        diff <= 0L -> "Due now"
+        diff < 60_000L -> "Due in < 1 min"
+        diff < 60 * 60 * 1000L -> "Due in ${ceil(diff / (1000.0 * 60.0)).toInt()} min"
+        else -> "Due in ${ceil(diff / (1000.0 * 60.0 * 60.0)).toInt()} h"
+    }
+}
+
 class MainActivity : ComponentActivity() {
     private var editTaskIdState = mutableStateOf(-1)
+    private var openEditState = mutableStateOf(false)
+    private var openTasksState = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Read the extra from the notification click
+        // Read extras from notification click
         editTaskIdState.value = intent.getIntExtra("EXTRA_TASK_ID", -1)
+        openEditState.value = intent.getBooleanExtra("EXTRA_OPEN_EDIT", false)
+        openTasksState.value = intent.getBooleanExtra("EXTRA_OPEN_TASKS", false)
 
         val dao = AppDatabase.getDatabase(this).todoDao()
         val settingsManager = SettingsManager(this)
@@ -84,6 +123,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             val displayMode by settingsManager.displayMode.collectAsState(initial = "Dark")
             val themeId by settingsManager.themeId.collectAsState(initial = 1)
+            val privacyAccepted by settingsManager.privacyAccepted.collectAsState(initial = null)
+            var showCustomSplash by remember { mutableStateOf(true) }
 
             TodoAppTheme(
                 displayMode = displayMode,
@@ -93,16 +134,36 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background,
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    val vm: TodoViewModel = viewModel(
-                        factory = TodoViewModelFactory(dao)
-                    )
-                    MainTabs(
-                        vm = vm,
-                        initialEditTaskId = editTaskIdState.value,
-                        settingsManager = settingsManager,
-                        currentDisplayMode = displayMode,
-                        currentThemeId = themeId
-                    )
+                    when {
+                        showCustomSplash -> {
+                            CustomSplashScreen(onFinished = { showCustomSplash = false })
+                        }
+                        privacyAccepted == null -> {
+                            Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+                        }
+                        privacyAccepted == false -> {
+                            PrivacyPolicyScreen(
+                                settingsManager = settingsManager,
+                                onAccepted = {
+                                    // privacyAccepted flow updates automatically via settingsManager
+                                }
+                            )
+                        }
+                        else -> {
+                            val vm: TodoViewModel = viewModel(
+                                factory = TodoViewModelFactory(dao)
+                            )
+                            MainTabs(
+                                vm = vm,
+                                initialEditTaskId = editTaskIdState.value,
+                                initialOpenEdit = openEditState.value,
+                                initialOpenTasks = openTasksState.value,
+                                settingsManager = settingsManager,
+                                currentDisplayMode = displayMode,
+                                currentThemeId = themeId
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -115,6 +176,8 @@ class MainActivity : ComponentActivity() {
         val newTaskId = intent.getIntExtra("EXTRA_TASK_ID", -1)
         if (newTaskId != -1) {
             editTaskIdState.value = newTaskId
+            openEditState.value = intent.getBooleanExtra("EXTRA_OPEN_EDIT", false)
+            openTasksState.value = intent.getBooleanExtra("EXTRA_OPEN_TASKS", false)
         }
     }
 }
@@ -127,6 +190,8 @@ class MainActivity : ComponentActivity() {
 fun MainTabs(
     vm: TodoViewModel,
     initialEditTaskId: Int = -1,
+    initialOpenEdit: Boolean = false,
+    initialOpenTasks: Boolean = false,
     settingsManager: SettingsManager,
     currentDisplayMode: String,
     currentThemeId: Int
@@ -143,17 +208,28 @@ fun MainTabs(
 
     val context = LocalContext.current
 
-    // Handle Notification Edit click
-    LaunchedEffect(initialEditTaskId) {
-        if (initialEditTaskId != -1) {
-            val task = AppDatabase.getDatabase(context).todoDao().getById(initialEditTaskId)
-            if (task != null) {
-                editingTaskGlobal = task
-            }
+    var showCompletedScreen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(initialOpenTasks) {
+        if (initialOpenTasks) {
+            selectedTab = 0
+            showCompletedScreen = false
         }
     }
 
-    var showCompletedScreen by remember { mutableStateOf(false) }
+    // Handle Notification Edit click or Postpone action
+    var handledInitialEdit by remember { mutableStateOf(false) }
+    LaunchedEffect(initialEditTaskId, initialOpenEdit) {
+        if (initialEditTaskId != -1 && !handledInitialEdit) {
+            handledInitialEdit = true
+            if (initialOpenEdit) {
+                val task = AppDatabase.getDatabase(context).todoDao().getById(initialEditTaskId)
+                if (task != null) {
+                    editingTaskGlobal = task
+                }
+            }
+        }
+    }
 
     BackHandler(enabled = drawerState.isOpen) {
         scope.launch {
@@ -568,6 +644,125 @@ fun TasksScreen(
     val customCategories by settingsManager.customCategories.collectAsState(initial = emptySet())
     val scope = rememberCoroutineScope()
 
+    // 10-second ticker for live countdown updates
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(10_000L)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+
+
+    val notifPromptShown by settingsManager.notificationPromptShown.collectAsState(initial = false)
+    val batteryPromptDismissed by settingsManager.batteryPromptDismissed.collectAsState(initial = false)
+
+    var showNotifExplanationDialog by remember { mutableStateOf(false) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!hasPermission && !notifPromptShown) {
+                showNotifExplanationDialog = true
+            }
+        }
+    }
+
+    if (showNotifExplanationDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                scope.launch { settingsManager.setNotificationPromptShown(true) }
+                showNotifExplanationDialog = false
+            },
+            title = { Text("Enable Notifications") },
+            text = { Text("DailyDo needs notification permission to remind you of your scheduled tasks on time.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch { settingsManager.setNotificationPromptShown(true) }
+                        showNotifExplanationDialog = false
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
+                ) {
+                    Text("Allow")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch { settingsManager.setNotificationPromptShown(true) }
+                        showNotifExplanationDialog = false
+                    }
+                ) {
+                    Text("Not Now")
+                }
+            }
+        )
+    }
+
+    val isIgnoringBattery = remember { BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context) }
+    if (!isIgnoringBattery && !batteryPromptDismissed) {
+        AlertDialog(
+            onDismissRequest = {
+                scope.launch { settingsManager.setBatteryPromptDismissed(true) }
+            },
+            title = { Text("Background Activity Required") },
+            text = { Text("To ensure reminders work when the app is closed, please allow background activity.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        BatteryOptimizationHelper.openManufacturerSettings(context)
+                        scope.launch { settingsManager.setBatteryPromptDismissed(true) }
+                    }
+                ) {
+                    Text("Fix Now")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch { settingsManager.setBatteryPromptDismissed(true) }
+                    }
+                ) {
+                    Text("Dismiss")
+                }
+            }
+        )
+    }
+
+    val hasRuntimePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    } else {
+        true
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var systemNotifsEnabled by remember {
+        mutableStateOf(NotificationPermissionHelper.areNotificationsFullyEnabled(context))
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                systemNotifsEnabled =
+                    NotificationPermissionHelper.areNotificationsFullyEnabled(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val showSystemNotifBanner = hasRuntimePermission && !systemNotifsEnabled
+
     var selectedCategory by remember { mutableStateOf("All") }
     var selectedPriority by remember { mutableStateOf("All") }
     var showPrevious by remember { mutableStateOf(true) }
@@ -578,34 +773,6 @@ fun TasksScreen(
     var showAddCategoryDialog by remember { mutableStateOf(false) }
     var newCategoryName by remember { mutableStateOf("") }
     var categoryToDelete by remember { mutableStateOf<String?>(null) }
-
-    var batteryWarningDismissed by remember { mutableStateOf(false) }
-    val isIgnoringBattery = remember { BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context) }
-
-    if (!isIgnoringBattery && !batteryWarningDismissed) {
-        AlertDialog(
-            onDismissRequest = { batteryWarningDismissed = true },
-            title = { Text("Background Activity Required") },
-            text = { Text("To ensure reminders work when the app is closed, please allow background activity.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        BatteryOptimizationHelper.openManufacturerSettings(context)
-                        batteryWarningDismissed = true
-                    }
-                ) {
-                    Text("Fix Now")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { batteryWarningDismissed = true }
-                ) {
-                    Text("Dismiss")
-                }
-            }
-        )
-    }
 
     val today = LocalDate.now()
     val pendingFiltered = todos.filter {
@@ -637,16 +804,45 @@ fun TasksScreen(
                 color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.weight(1f)
             )
+        }
 
-            // ── Test Button ──────────────────────────────────────
-            Button(
-                onClick = {
-                    TestReminderHelper.schedule5SecondReminder(context)
-                },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                modifier = Modifier.height(36.dp)
+        // ── System Notification Warning Banner ───────────────────
+        if (showSystemNotifBanner) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .clickable {
+                        NotificationPermissionHelper.openNotificationSettings(context)
+                    },
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = RoundedCornerShape(12.dp)
             ) {
-                Text("Test 5s", fontSize = 12.sp)
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Outlined.NotificationsOff,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Notifications are off in system settings — tap to fix",
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
 
@@ -695,9 +891,11 @@ fun TasksScreen(
                             TaskCard(
                                 title = item.title,
                                 priority = item.priority,
+                                category = item.category,
                                 done = item.isDone,
+                                dueText = getDueText(item),
+                                hasReminder = item.reminderTimeMillis != null,
                                 onToggle = {
-                                    // FIXED: Use updated state
                                     val updated = item.copy(isDone = !item.isDone)
                                     vm.toggleDone(item)
                                     if (updated.isDone) {
@@ -748,9 +946,11 @@ fun TasksScreen(
                             TaskCard(
                                 title = item.title,
                                 priority = item.priority,
+                                category = item.category,
                                 done = item.isDone,
+                                dueText = null,
+                                hasReminder = item.reminderTimeMillis != null,
                                 onToggle = {
-                                    // FIXED: Use updated state
                                     val updated = item.copy(isDone = !item.isDone)
                                     vm.toggleDone(item)
                                     if (updated.isDone) {
@@ -1081,15 +1281,41 @@ fun SectionHeader(
 fun TaskCard(
     title: String,
     priority: String,
+    category: String = "",
     done: Boolean,
+    dueText: String? = null,
+    hasReminder: Boolean = true,
     onToggle: () -> Unit,
     onDelete: () -> Unit,
     onLongClick: () -> Unit = {}
 ) {
+    val infiniteTransition = rememberInfiniteTransition(label = "dueNowAnim")
+
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = -1.5f,
+        targetValue = 1.5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(400, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "rotation"
+    )
+
+    val glowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glow"
+    )
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .height(72.dp)
+            .then(if (dueText != null) Modifier.graphicsLayer { rotationZ = rotation } else Modifier)
             .combinedClickable(
                 onClick = { onToggle() },
                 onLongClick = { onLongClick() }
@@ -1152,28 +1378,62 @@ fun TaskCard(
                 modifier = Modifier.weight(1f)
             )
 
-            Spacer(Modifier.width(8.dp))
-
-            // Priority pill tag
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(priorityColor(priority).copy(alpha = 0.18f))
-                    .border(
-                        BorderStroke(1.dp, priorityColor(priority).copy(alpha = 0.6f)),
-                        RoundedCornerShape(50)
-                    )
-                    .padding(horizontal = 8.dp, vertical = 3.dp)
-            ) {
+            if (dueText != null) {
                 Text(
-                    text = priority,
-                    color = priorityColor(priority),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 0.3.sp
+                    text = dueText,
+                    color = Color(0xFFE53935).copy(alpha = glowAlpha),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 4.dp, end = 8.dp)
                 )
+            } else {
+                Spacer(Modifier.width(8.dp))
             }
 
+            // Right-side grouping
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                
+                // 1. Golden Silent Bell (Left)
+                if (!hasReminder) {
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFFFC107).copy(alpha = 0.15f))
+                            .border(1.dp, Color(0xFFFFC107).copy(alpha = 0.5f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.NotificationsOff,
+                            contentDescription = "Silent",
+                            tint = Color(0xFFFFC107),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+
+                // 2. Category Pill (Right)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                        .border(
+                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                            RoundedCornerShape(50)
+                        )
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = category,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 0.3.sp
+                    )
+                }
+            }
+
+            // 3. Delete Icon (Far Right)
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Outlined.Delete,
@@ -1181,6 +1441,139 @@ fun TaskCard(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(22.dp)
                 )
+            }
+        }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════
+// PRIVACY POLICY SCREEN COMPOSABLE
+// ═════════════════════════════════════════════════════════════
+
+@Composable
+fun PrivacyPolicyScreen(
+    settingsManager: SettingsManager,
+    onAccepted: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
+    val privacyPolicyUrl = "https://github.com/Fitoxima/DailyDo/blob/main/PRIVACY_POLICY.md"
+    val warningColor = Color(0xFFFFC107)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+    ) {
+        // Top Bar
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, top = 32.dp, bottom = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Privacy Policy",
+                fontSize = 26.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = warningColor
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Before using DailyDo, please review our Privacy Policy.",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                lineHeight = 18.sp
+            )
+        }
+
+        // Scrollable Policy Card
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 20.dp)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(topStart = 4.dp, topEnd = 12.dp, bottomEnd = 12.dp, bottomStart = 4.dp)
+            ) {
+                Row(modifier = Modifier.fillMaxSize()) {
+                    // Left yellow border
+                    Box(modifier = Modifier.width(4.dp).fillMaxHeight().background(warningColor))
+                    
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "DailyDo is a local to-do app. We do not collect, store, or transmit any personal data to external servers.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 20.sp
+                        )
+                        Text(
+                            text = "All your tasks, categories, and settings are stored locally on your device using Room Database and DataStore.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 20.sp
+                        )
+                        Text(
+                            text = "The app uses notifications and AlarmManager to remind you of tasks. These permissions are used solely for the app's core functionality.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 20.sp
+                        )
+                        Text(
+                            text = "For the full policy, tap the link below.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 20.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // Bottom Area
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            TextButton(onClick = { uriHandler.openUri(privacyPolicyUrl) }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("View Full Policy on GitHub", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = warningColor)
+                    Spacer(Modifier.width(4.dp))
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = warningColor, modifier = Modifier.size(16.dp))
+                }
+            }
+            
+            Spacer(Modifier.height(12.dp))
+            
+            Button(
+                onClick = {
+                    scope.launch {
+                        settingsManager.setPrivacyAccepted(true)
+                        onAccepted()
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = warningColor,
+                    contentColor = Color.Black
+                )
+            ) {
+                Text("I Agree", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
             }
         }
     }
@@ -1207,6 +1600,7 @@ fun AddTaskSheet(
         val rem = initialTask?.reminderTimeMillis
         val due = initialTask?.dueTimeMillis ?: initialTask?.dueDateMillis
         when {
+            initialTask == null -> "At time"
             rem == null -> "None"
             due != null && rem == due -> "At time"
             due != null && rem == due - 10 * 60 * 1000L -> "10 min before"
@@ -1572,7 +1966,7 @@ fun AddTaskSheet(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "REMINDER",
+                        text = "REMINDER IN ADVANCE",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                         letterSpacing = 0.5.sp,
@@ -1734,7 +2128,8 @@ fun AddTaskSheet(
     if (showTimePicker) {
         val timePickerState = rememberTimePickerState(
             initialHour = dueTime.hour,
-            initialMinute = dueTime.minute
+            initialMinute = dueTime.minute,
+            is24Hour = false
         )
 
         AlertDialog(
@@ -1754,37 +2149,6 @@ fun AddTaskSheet(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val isHourSelected = timePickerState.selection == TimePickerSelectionMode.Hour
-                        TextButton(
-                            onClick = { timePickerState.selection = TimePickerSelectionMode.Hour }
-                        ) {
-                            Text(
-                                text = "Hours",
-                                fontSize = 16.sp,
-                                fontWeight = if (isHourSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isHourSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Text(
-                            text = "/",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        TextButton(
-                            onClick = { timePickerState.selection = TimePickerSelectionMode.Minute }
-                        ) {
-                            Text(
-                                text = "Minutes",
-                                fontSize = 16.sp,
-                                fontWeight = if (!isHourSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (!isHourSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
                         TimePicker(state = timePickerState)
                     }
@@ -1840,5 +2204,169 @@ fun AddTaskSheet(
                 }
             }
         )
+    }
+}
+
+// ═════════════════════════════════════════════════════════════
+// CUSTOM SPLASH SCREEN COMPOSABLE
+// ═════════════════════════════════════════════════════════════
+
+@Composable
+fun CustomSplashScreen(onFinished: () -> Unit) {
+    // Animation States
+    var startAnim by remember { mutableStateOf(false) }
+
+    // Icon Animation (Fades and scales in)
+    val iconAlpha by animateFloatAsState(
+        targetValue = if (startAnim) 1f else 0f,
+        animationSpec = tween(400, easing = LinearEasing),
+        label = "iconAlpha"
+    )
+    val iconScale by animateFloatAsState(
+        targetValue = if (startAnim) 1f else 0.9f,
+        animationSpec = tween(400, easing = LinearEasing),
+        label = "iconScale"
+    )
+
+    // Text Animation (Slides up)
+    val textAlpha by animateFloatAsState(
+        targetValue = if (startAnim) 1f else 0f,
+        animationSpec = tween(500, delayMillis = 400, easing = LinearEasing),
+        label = "textAlpha"
+    )
+    val textOffset by animateFloatAsState(
+        targetValue = if (startAnim) 0f else 30f,
+        animationSpec = tween(500, delayMillis = 400, easing = LinearEasing),
+        label = "textOffset"
+    )
+
+    // Trail Animation (Draws left to right)
+    val trailProgress by animateFloatAsState(
+        targetValue = if (startAnim) 1f else 0f,
+        animationSpec = tween(1400, delayMillis = 900, easing = LinearEasing),
+        label = "trailProgress"
+    )
+
+    // Trigger animations and completion
+    LaunchedEffect(Unit) {
+        startAnim = true
+        delay(2500) // Wait for all animations to finish
+        onFinished()
+    }
+
+    // UI Layout
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.offset(y = (-20).dp) // Slight upward shift looks better visually
+        ) {
+            // 1. App Icon
+            Box(
+                modifier = Modifier
+                    .size(130.dp)
+                    .graphicsLayer {
+                        alpha = iconAlpha
+                        scaleX = iconScale
+                        scaleY = iconScale
+                    }
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(Color.White)
+            ) {
+                // Re-use the launcher icon as a foreground image
+                Image(
+                    painter = painterResource(id = R.drawable.ic_launcher_foreground_custom),
+                    contentDescription = "App Icon",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(22.dp))
+                        .graphicsLayer { scaleX = 1.4f; scaleY = 1.4f }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // 2. DailyDo Text
+            Text(
+                text = "DailyDo",
+                color = Color.White,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = (-0.5).sp,
+                modifier = Modifier.graphicsLayer {
+                    alpha = textAlpha
+                    translationY = textOffset
+                }
+            )
+
+            Spacer(modifier = Modifier.height(40.dp))
+
+            // 3. Dotted Trail (Using Row for 100% safe cross-device rendering)
+            val dotSizes = listOf(3.dp, 6.dp, 4.dp, 7.dp, 5.dp, 3.dp, 6.dp, 4.dp, 8.dp, 5.dp, 4.dp, 6.dp, 3.dp, 5.dp, 4.dp)
+            val totalDots = dotSizes.size
+
+            Box(
+                modifier = Modifier
+                    .width(240.dp)
+                    .height(24.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    dotSizes.forEachIndexed { index, size ->
+                        val dotProgress = (trailProgress * totalDots) - index
+                        val currentAlpha = dotProgress.coerceIn(0f, 1f)
+
+                        Box(
+                            modifier = Modifier
+                                .size(size)
+                                .graphicsLayer { alpha = currentAlpha }
+                                .background(Color(0xFF9E9E9E), CircleShape)
+                        )
+                    }
+                }
+
+                // Moving Pencil
+                val pencilX = (trailProgress * 240.dp.value)
+                Box(
+                    modifier = Modifier
+                        .offset(x = pencilX.dp, y = (-10).dp)
+                        .width(8.dp)
+                        .height(36.dp)
+                        .graphicsLayer { alpha = if (trailProgress > 0f && trailProgress < 1f) 1f else 0f }
+                ) {
+                    // Simplified Pencil Shape
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFFFFC107), RoundedCornerShape(2.dp))
+                    ) {
+                        // Pink Eraser
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .background(Color(0xFFFF8A80), RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
+                        )
+                        // Grey Band
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(3.dp)
+                                .offset(y = 6.dp)
+                                .background(Color(0xFFB0BEC5))
+                        )
+                    }
+                }
+            }
+        }
     }
 }
