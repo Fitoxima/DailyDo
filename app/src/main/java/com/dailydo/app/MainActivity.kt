@@ -568,6 +568,34 @@ fun TasksScreen(
     var newCategoryName by remember { mutableStateOf("") }
     var categoryToDelete by remember { mutableStateOf<String?>(null) }
 
+    var batteryWarningDismissed by remember { mutableStateOf(false) }
+    val isIgnoringBattery = remember { BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context) }
+
+    if (!isIgnoringBattery && !batteryWarningDismissed) {
+        AlertDialog(
+            onDismissRequest = { batteryWarningDismissed = true },
+            title = { Text("Background Activity Required") },
+            text = { Text("To ensure reminders work when the app is closed, please allow background activity.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        BatteryOptimizationHelper.openManufacturerSettings(context)
+                        batteryWarningDismissed = true
+                    }
+                ) {
+                    Text("Fix Now")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { batteryWarningDismissed = true }
+                ) {
+                    Text("Dismiss")
+                }
+            }
+        )
+    }
+
     val today = LocalDate.now()
     val pendingFiltered = todos.filter {
         !it.isDone &&
